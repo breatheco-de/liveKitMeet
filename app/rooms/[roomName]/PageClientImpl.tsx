@@ -26,12 +26,25 @@ import {
   TrackPublishDefaults,
   VideoCaptureOptions,
 } from 'livekit-client';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useSetupE2EE } from '@/lib/useSetupE2EE';
 import { useLowCPUOptimizer } from '@/lib/usePerfomanceOptimiser';
 
 const TOKEN_ENDPOINT = process.env.NEXT_PUBLIC_TOKEN_ENDPOINT || '';
 const SHOW_SETTINGS_MENU = process.env.NEXT_PUBLIC_SHOW_SETTINGS_MENU == 'true';
+
+// Decode `name` claim from JWT without verifying (solo para UI)
+function decodeNameFromToken(token: string): string | null {
+  try {
+    const part = token.split('.')[1];
+    if (!part) return null;
+    const json = JSON.parse(atob(part.replace(/-/g, '+').replace(/_/g, '/')));
+    const name = (json?.name || '').toString().trim();
+    return name || null;
+  } catch {
+    return null;
+  }
+}
 
 export function PageClientImpl(props: {
   roomName: string;
@@ -39,6 +52,11 @@ export function PageClientImpl(props: {
   hq: boolean;
   codec: VideoCodec;
 }) {
+  const searchParams = useSearchParams();
+  const qsToken = searchParams.get('token') || '';
+  const qsServerUrl = searchParams.get('serverUrl') || '';
+  const qsParticipantName = searchParams.get('participantName') || '';
+
   const [preJoinChoices, setPreJoinChoices] = React.useState<LocalUserChoices | undefined>(
     undefined,
   );
@@ -53,18 +71,42 @@ export function PageClientImpl(props: {
     undefined,
   );
 
+  // Auto-join si vienen token y serverUrl en query
+  React.useEffect(() => {
+    if (qsToken && qsServerUrl) {
+      const pname = qsParticipantName || decodeNameFromToken(qsToken) || '';
+      setPreJoinChoices({
+        username: pname,
+        videoEnabled: true,
+        audioEnabled: true,
+      });
+      setConnectionDetails({
+        serverUrl: qsServerUrl,
+        roomName: props.roomName,
+        participantToken: qsToken,
+        participantName: pname,
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qsToken, qsServerUrl, qsParticipantName, props.roomName]);
+
   const handlePreJoinSubmit = React.useCallback(async (values: LocalUserChoices) => {
-    setPreJoinChoices(values);
+    // Si ya venimos con token por query, no llamar al backend
+    if (qsToken && qsServerUrl) {
+      setPreJoinChoices(values);
+      return;
+    }
 
     if (!TOKEN_ENDPOINT) {
       throw new Error('NEXT_PUBLIC_TOKEN_ENDPOINT is not configured');
     }
 
+    setPreJoinChoices(values);
+
     const eventId = props.roomName.replace('event-', '');
     const url = TOKEN_ENDPOINT.replace('{id}', eventId);
 
-    // Llamada directa a tu API (envía cookies de sesión)
-    const resp = await fetch(url, { method: 'POST', credentials: 'include' });
+    const resp = await fetch(url, { method: 'GET', credentials: 'include' });
     if (!resp.ok) {
       const text = await resp.text();
       throw new Error(text || `Token endpoint failed with ${resp.status}`);
@@ -72,7 +114,6 @@ export function PageClientImpl(props: {
 
     const data = (await resp.json()) as { serverUrl: string; token: string };
 
-    // Adaptamos al tipo ConnectionDetails esperado por la UI
     const connectionDetailsData: ConnectionDetails = {
       serverUrl: data.serverUrl,
       roomName: props.roomName,
@@ -81,24 +122,30 @@ export function PageClientImpl(props: {
     };
 
     setConnectionDetails(connectionDetailsData);
-  }, [props.roomName]);
+  }, [props.roomName, qsToken, qsServerUrl]);
 
   const handlePreJoinError = React.useCallback((e: any) => console.error(e), []);
 
+  const shouldShowPreJoin =
+    !connectionDetails || !preJoinChoices; // si hay token en query, ya seteamos ambos y no se muestra
+
   return (
     <main data-lk-theme="default" style={{ height: '100%' }}>
-      {connectionDetails === undefined || preJoinChoices === undefined ? (
+      {shouldShowPreJoin ? (
         <div style={{ display: 'grid', placeItems: 'center', height: '100%' }}>
           <PreJoin
-            defaults={preJoinDefaults}
+            defaults={{
+              ...preJoinDefaults,
+              username: qsParticipantName || preJoinDefaults.username,
+            }}
             onSubmit={handlePreJoinSubmit}
             onError={handlePreJoinError}
           />
         </div>
       ) : (
         <VideoConferenceComponent
-          connectionDetails={connectionDetails}
-          userChoices={preJoinChoices}
+          connectionDetails={connectionDetails!}
+          userChoices={preJoinChoices!}
           options={{ codec: props.codec, hq: props.hq }}
         />
       )}
@@ -180,6 +227,20 @@ function VideoConferenceComponent(props: {
     };
   }, []);
 
+  const router = useRouter();
+
+  const handleOnLeave = React.useCallback(() => router.push('/'), [router]);
+  const handleError = React.useCallback((error: Error) => {
+    console.error(error);
+    alert(`Encountered an unexpected error, check the console logs for details: ${error.message}`);
+  }, []);
+  const handleEncryptionError = React.useCallback((error: Error) => {
+    console.error(error);
+    alert(
+      `Encountered an unexpected encryption error, check the console logs for details: ${error.message}`,
+    );
+  }, []);
+
   React.useEffect(() => {
     room.on(RoomEvent.Disconnected, handleOnLeave);
     room.on(RoomEvent.EncryptionError, handleEncryptionError);
@@ -211,22 +272,9 @@ function VideoConferenceComponent(props: {
       room.off(RoomEvent.EncryptionError, handleEncryptionError);
       room.off(RoomEvent.MediaDevicesError, handleError);
     };
-  }, [e2eeSetupComplete, room, props.connectionDetails, props.userChoices]);
+  }, [e2eeSetupComplete, room, props.connectionDetails, props.userChoices, connectOptions, handleOnLeave, handleEncryptionError, handleError]);
 
   const lowPowerMode = useLowCPUOptimizer(room);
-
-  const router = useRouter();
-  const handleOnLeave = React.useCallback(() => router.push('/'), [router]);
-  const handleError = React.useCallback((error: Error) => {
-    console.error(error);
-    alert(`Encountered an unexpected error, check the console logs for details: ${error.message}`);
-  }, []);
-  const handleEncryptionError = React.useCallback((error: Error) => {
-    console.error(error);
-    alert(
-      `Encountered an unexpected encryption error, check the console logs for details: ${error.message}`,
-    );
-  }, []);
 
   React.useEffect(() => {
     if (lowPowerMode) {
