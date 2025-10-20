@@ -33,7 +33,7 @@ import { useLowCPUOptimizer } from '@/lib/usePerfomanceOptimiser';
 const TOKEN_ENDPOINT = process.env.NEXT_PUBLIC_TOKEN_ENDPOINT || '';
 const SHOW_SETTINGS_MENU = process.env.NEXT_PUBLIC_SHOW_SETTINGS_MENU == 'true';
 
-// Decode `name` claim from JWT without verifying (solo para UI)
+// Decode `name` claim del JWT (solo para UI)
 function decodeNameFromToken(token: string): string | null {
   try {
     const part = token.split('.')[1];
@@ -60,13 +60,17 @@ export function PageClientImpl(props: {
   const [preJoinChoices, setPreJoinChoices] = React.useState<LocalUserChoices | undefined>(
     undefined,
   );
-  const preJoinDefaults = React.useMemo(() => {
+
+  const preJoinDefaults = React.useMemo<LocalUserChoices>(() => {
     return {
       username: '',
       videoEnabled: true,
       audioEnabled: true,
+      videoDeviceId: undefined,
+      audioDeviceId: undefined,
     };
   }, []);
+
   const [connectionDetails, setConnectionDetails] = React.useState<ConnectionDetails | undefined>(
     undefined,
   );
@@ -79,6 +83,8 @@ export function PageClientImpl(props: {
         username: pname,
         videoEnabled: true,
         audioEnabled: true,
+        videoDeviceId: undefined,
+        audioDeviceId: undefined,
       });
       setConnectionDetails({
         serverUrl: qsServerUrl,
@@ -126,8 +132,7 @@ export function PageClientImpl(props: {
 
   const handlePreJoinError = React.useCallback((e: any) => console.error(e), []);
 
-  const shouldShowPreJoin =
-    !connectionDetails || !preJoinChoices; // si hay token en query, ya seteamos ambos y no se muestra
+  const shouldShowPreJoin = !connectionDetails || !preJoinChoices;
 
   return (
     <main data-lk-theme="default" style={{ height: '100%' }}>
@@ -195,9 +200,9 @@ function VideoConferenceComponent(props: {
       e2ee: keyProvider && worker && e2eeEnabled ? { keyProvider, worker } : undefined,
       singlePeerConnection: isMeetStaging(),
     };
-  }, [props.userChoices, props.options.hq, props.options.codec]);
+  }, [props.userChoices, props.options.hq, props.options.codec, e2eeEnabled, keyProvider, worker]);
 
-  const room = React.useMemo(() => new Room(roomOptions), []);
+  const room = React.useMemo(() => new Room(roomOptions), [roomOptions]);
 
   React.useEffect(() => {
     if (e2eeEnabled) {
@@ -219,7 +224,7 @@ function VideoConferenceComponent(props: {
     } else {
       setE2eeSetupComplete(true);
     }
-  }, [e2eeEnabled, room, e2eePassphrase]);
+  }, [e2eeEnabled, keyProvider, room, e2eePassphrase]);
 
   const connectOptions = React.useMemo((): RoomConnectOptions => {
     return {
@@ -272,7 +277,16 @@ function VideoConferenceComponent(props: {
       room.off(RoomEvent.EncryptionError, handleEncryptionError);
       room.off(RoomEvent.MediaDevicesError, handleError);
     };
-  }, [e2eeSetupComplete, room, props.connectionDetails, props.userChoices, connectOptions, handleOnLeave, handleEncryptionError, handleError]);
+  }, [
+    e2eeSetupComplete,
+    room,
+    props.connectionDetails,
+    props.userChoices,
+    connectOptions,
+    handleOnLeave,
+    handleEncryptionError,
+    handleError,
+  ]);
 
   const lowPowerMode = useLowCPUOptimizer(room);
 
