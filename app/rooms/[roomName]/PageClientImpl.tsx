@@ -30,8 +30,7 @@ import { useRouter } from 'next/navigation';
 import { useSetupE2EE } from '@/lib/useSetupE2EE';
 import { useLowCPUOptimizer } from '@/lib/usePerfomanceOptimiser';
 
-const CONN_DETAILS_ENDPOINT =
-  process.env.NEXT_PUBLIC_CONN_DETAILS_ENDPOINT ?? '/api/connection-details';
+const TOKEN_ENDPOINT = process.env.NEXT_PUBLIC_TOKEN_ENDPOINT || '';
 const SHOW_SETTINGS_MENU = process.env.NEXT_PUBLIC_SHOW_SETTINGS_MENU == 'true';
 
 export function PageClientImpl(props: {
@@ -56,16 +55,34 @@ export function PageClientImpl(props: {
 
   const handlePreJoinSubmit = React.useCallback(async (values: LocalUserChoices) => {
     setPreJoinChoices(values);
-    const url = new URL(CONN_DETAILS_ENDPOINT, window.location.origin);
-    url.searchParams.append('roomName', props.roomName);
-    url.searchParams.append('participantName', values.username);
-    if (props.region) {
-      url.searchParams.append('region', props.region);
+
+    if (!TOKEN_ENDPOINT) {
+      throw new Error('NEXT_PUBLIC_TOKEN_ENDPOINT is not configured');
     }
-    const connectionDetailsResp = await fetch(url.toString());
-    const connectionDetailsData = await connectionDetailsResp.json();
+
+    const eventId = props.roomName.replace('event-', '');
+    const url = TOKEN_ENDPOINT.replace('{id}', eventId);
+
+    // Llamada directa a tu API (envía cookies de sesión)
+    const resp = await fetch(url, { method: 'POST', credentials: 'include' });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(text || `Token endpoint failed with ${resp.status}`);
+    }
+
+    const data = (await resp.json()) as { serverUrl: string; token: string };
+
+    // Adaptamos al tipo ConnectionDetails esperado por la UI
+    const connectionDetailsData: ConnectionDetails = {
+      serverUrl: data.serverUrl,
+      roomName: props.roomName,
+      participantToken: data.token,
+      participantName: values.username,
+    };
+
     setConnectionDetails(connectionDetailsData);
-  }, []);
+  }, [props.roomName]);
+
   const handlePreJoinError = React.useCallback((e: any) => console.error(e), []);
 
   return (
